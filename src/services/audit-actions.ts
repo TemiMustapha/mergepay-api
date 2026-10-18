@@ -12,6 +12,13 @@
  * Example: `treasury.deposit.create`, `settlement.confirm.submitted`
  */
 export const AuditAction = {
+  // ── Authentication / SEP-10 ────────────────────────────────────────
+  AUTH_CHALLENGE_CREATED: "auth.challenge.created",
+  AUTH_CHALLENGE_VERIFIED: "auth.challenge.verified",
+  AUTH_CHALLENGE_EXPIRED: "auth.challenge.expired",
+  AUTH_CHALLENGE_REJECTED: "auth.challenge.rejected",
+  AUTH_TOKEN_ISSUED: "auth.token.issued",
+
   // ── Group / membership ──────────────────────────────────────────────
   GROUP_CREATE: "group.create",
   GROUP_ARCHIVE: "group.archive",

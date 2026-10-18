@@ -64,6 +64,8 @@ import {
   readTimeBounds,
   type TimeBounds,
 } from "../lib/time-bounds";
+import { audit } from "./audit";
+import { AuditAction } from "./audit-actions";
 import { stellar } from "./stellar";
 
 /** How long a freshly built challenge stays signable. */
@@ -105,7 +107,16 @@ function invalidChallenge(): never {
  * structure of the transaction-intent expiry path (INTENT_EXPIRED,
  * src/lib/time-bounds.ts).
  */
-function expiredChallenge(): never {
+function expiredChallenge(account?: string): never {
+  // Best-effort audit log for expired challenge rejection.
+  if (account) {
+    void audit({
+      action: AuditAction.AUTH_CHALLENGE_EXPIRED,
+      entityType: "auth_challenge",
+      entityId: account,
+      metadata: { challengeValiditySeconds: CHALLENGE_VALIDITY_SECONDS },
+    });
+  }
   throw Errors.challengeExpired(
     "Authentication challenge has expired. Request a new challenge and sign it promptly.",
     { challengeValiditySeconds: CHALLENGE_VALIDITY_SECONDS }
@@ -117,7 +128,16 @@ function expiredChallenge(): never {
  * the signature material did not verify — wrong (or missing) client signature,
  * or a funded account whose signers do not meet the medium threshold.
  */
-function invalidSignature(): never {
+function invalidSignature(account?: string): never {
+  // Best-effort audit log for signature verification failure.
+  if (account) {
+    void audit({
+      action: AuditAction.AUTH_CHALLENGE_REJECTED,
+      entityType: "auth_challenge",
+      entityId: account,
+      metadata: { reason: "signature_verification_failed" },
+    });
+  }
   throw Errors.unauthorized(
     "Challenge signature verification failed. Ensure the challenge is signed by the account's signing key(s) before submitting."
   );
@@ -170,7 +190,8 @@ function invalidChallengeWindow(reason: "not_yet_valid" | "window_too_long"): ne
  */
 export function validateChallengeTimeBounds(
   bounds: TimeBounds | null,
-  now: Date = new Date()
+  now: Date = new Date(),
+  account?: string
 ): void {
   // No usable bounds, or an inverted window (minTime after maxTime): an
   // envelope that never expires, or whose bounds contradict each other, is
@@ -182,7 +203,7 @@ export function validateChallengeTimeBounds(
   const currentSeconds = nowSeconds(now);
 
   if (bounds.maxTime + CLOCK_SKEW_TOLERANCE_SECONDS <= currentSeconds) {
-    expiredChallenge();
+    expiredChallenge(account);
   }
   if (bounds.minTime > currentSeconds + CLOCK_SKEW_TOLERANCE_SECONDS) {
     invalidChallengeWindow("not_yet_valid");
@@ -212,6 +233,14 @@ export function buildChallenge(account: string): {
     config.networkPassphrase,
     config.WEB_AUTH_DOMAIN
   );
+
+  // Best-effort audit log for challenge creation — never blocks the flow.
+  void audit({
+    action: AuditAction.AUTH_CHALLENGE_CREATED,
+    entityType: "auth_challenge",
+    entityId: account,
+    metadata: { validitySeconds: CHALLENGE_VALIDITY_SECONDS },
+  });
 
   return { transaction, networkPassphrase: config.networkPassphrase };
 }
@@ -285,7 +314,7 @@ function validateChallengeEnvelope(tx: Transaction, clientAccountId: string): Ti
   // (or that outlives the validity this server issues) with its own codes.
   // The checks live in validateChallengeTimeBounds — the explicit, directly
   // testable statement of the challenge-expiration contract.
-  validateChallengeTimeBounds(bounds);
+  validateChallengeTimeBounds(bounds, undefined, clientAccountId);
 
   const operations = tx.operations as ChallengeOperation[];
   if (operations.length === 0) invalidChallenge();
@@ -561,7 +590,7 @@ export async function authenticateChallenge(signedXdr: string): Promise<Verified
     // threshold failure here means the signature material is wrong. Reported
     // distinctly from expiry: the remedy is re-signing the same envelope,
     // not minting a new challenge.
-    invalidSignature();
+    invalidSignature(clientAccountId);
   }
 
   // Consumed last, so a challenge is only burned by an otherwise valid
@@ -578,6 +607,14 @@ export async function authenticateChallenge(signedXdr: string): Promise<Verified
     expiresAt: new Date((bounds.maxTime + CLOCK_SKEW_TOLERANCE_SECONDS + 1) * 1000),
   });
   if (outcome !== "claimed") invalidChallenge();
+
+  // Best-effort audit log for successful challenge verification.
+  void audit({
+    action: AuditAction.AUTH_CHALLENGE_VERIFIED,
+    entityType: "auth_challenge",
+    entityId: clientAccountId,
+    metadata: { challengeHash: tx.hash().toString("hex") },
+  });
 
   return { account: clientAccountId, challengeHash: tx.hash().toString("hex") };
 }
